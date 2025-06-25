@@ -6,26 +6,29 @@ import os
 app = Flask(__name__)
 CORS(app)
 
-# base_url は絶対に渡さない！
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# OpenAIクライアントの初期化（シンプルに）
+client = OpenAI(
+    api_key=os.getenv("OPENAI_API_KEY")
+)
 
 @app.route("/api/message", methods=["POST"])
 def chat():
-    try:
-        data = request.json
-        user_input = data.get("message", "")
-        if not user_input:
-            return jsonify({"error": "message is required"}), 400
+    data = request.get_json()
+    user_message = data.get("message", "")
 
+    if not user_message:
+        return jsonify({"error": "メッセージが空です"}), 400
+
+    try:
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
-                {"role": "system", "content": "あなたは親しみやすく丁寧なアシスタントです。"},
-                {"role": "user", "content": user_input}
+                {"role": "system", "content": "あなたは共感的で誠実なメンタルサポーターです。"},
+                {"role": "user", "content": user_message}
             ]
         )
         reply = response.choices[0].message.content.strip()
-        return jsonify({"response": reply})
+        return jsonify({"reply": reply})
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
