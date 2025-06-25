@@ -1,22 +1,36 @@
 from flask import Flask, request, jsonify
-from flask_cors import CORS
+import openai
+import os
 
 app = Flask(__name__)
-CORS(app)  # クロスオリジン対応
 
-@app.route('/')
+# OpenAI APIキーをRender環境変数から取得
+openai.api_key = os.environ.get("OPENAI_API_KEY")
+
+@app.route("/")
 def home():
-    return 'Flaskサーバーは正常に稼働中です ✅'
+    return "CocoYell API is running."
 
-@app.route('/api/message', methods=['POST'])
+@app.route("/api/message", methods=["POST"])
 def message():
     data = request.get_json()
-    if not data or 'message' not in data:
-        return jsonify({'error': 'メッセージが見つかりません'}), 400
+    user_msg = data.get("message", "").strip()
     
-    user_message = data['message']
-    reply = f"受け取りました: 「{user_message}」"
-    return jsonify({'reply': reply})
+    if not user_msg:
+        return jsonify({"reply": "メッセージが空でした。"}), 400
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10000)
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": "あなたはスミスという名前のキャラクター。誠実でクールだが、少し可愛さがある。共感を軸に、相手の心を整理し、本質的な一言を届ける役目を持つ。"},
+                {"role": "user", "content": user_msg}
+            ],
+            temperature=0.7,
+            max_tokens=500
+        )
+        reply = response.choices[0].message.content.strip()
+        return jsonify({"reply": reply})
+
+    except Exception as e:
+        return jsonify({"reply": f"OpenAIエラー: {str(e)}"}), 500
