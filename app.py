@@ -3,34 +3,35 @@ from flask_cors import CORS
 from openai import OpenAI
 import os
 
-# Flask 初期化
 app = Flask(__name__)
 CORS(app)
 
-# OpenAIクライアント 初期化（※ proxies など渡さないこと！）
-client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY")
-)
+# OpenAI クライアント初期化（v1.30以降対応）
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# ルート設定
 @app.route("/api/message", methods=["POST"])
-def message():
+def chat():
     data = request.get_json()
-    user_input = data.get("message", "")
+    user_message = data.get("message", "")
+
+    if not user_message:
+        return jsonify({"error": "message is required"}), 400
 
     try:
-        completion = client.chat.completions.create(
-            model="gpt-4o",
+        response = client.chat.completions.create(
+            model="gpt-4o",  # or "gpt-3.5-turbo"
             messages=[
-                {"role": "system", "content": "あなたは共感的なカウンセラーです。"},
-                {"role": "user", "content": user_input}
+                {"role": "system", "content": "あなたは優しくて共感的なAIカウンセラーです。"},
+                {"role": "user", "content": user_message}
             ]
         )
-        reply = completion.choices[0].message.content
-        return jsonify({"reply": reply})
+
+        ai_reply = response.choices[0].message.content
+        return jsonify({"reply": ai_reply})
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# エントリーポイント
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+@app.route("/", methods=["GET"])
+def health_check():
+    return "Flask OpenAI API is running!", 200
