@@ -4,7 +4,7 @@ import os
 
 app = Flask(__name__)
 
-client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+openai.api_key = os.environ.get("OPENAI_API_KEY")
 
 @app.route("/")
 def home():
@@ -19,7 +19,7 @@ def message():
         return jsonify({"reply": "メッセージが空でした。"}), 400
 
     try:
-        response = client.chat.completions.create(
+        response = openai.ChatCompletion.create(
             model="gpt-4o",
             messages=[
                 {"role": "system", "content": "あなたはスミス。優しく共感し、ユーザーの心に寄り添うカウンセラーです。"},
@@ -28,7 +28,7 @@ def message():
             temperature=0.7,
             max_tokens=500
         )
-        reply = response.choices[0].message.content.strip()
+        reply = response.choices[0].message["content"].strip()
         return jsonify({"reply": reply})
 
     except Exception as e:
