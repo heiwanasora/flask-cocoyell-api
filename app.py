@@ -4,7 +4,7 @@ import os
 
 app = Flask(__name__)
 
-# 安全にAPIキーを読み込む（Render環境変数を使う前提）
+# 環境変数からAPIキー取得
 openai_api_key = os.environ.get("OPENAI_API_KEY")
 client = OpenAI(api_key=openai_api_key)
 
@@ -31,5 +31,6 @@ def message():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# Render用の起動は gunicorn が担当するから下記は実行されない（あってOK）
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    app.run()
