@@ -3,22 +3,34 @@ from flask_cors import CORS
 from openai import OpenAI
 import os
 
+# Flask 初期化
 app = Flask(__name__)
 CORS(app)
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# OpenAIクライアント 初期化（※ proxies など渡さないこと！）
+client = OpenAI(
+    api_key=os.getenv("OPENAI_API_KEY")
+)
 
+# ルート設定
 @app.route("/api/message", methods=["POST"])
-def chat():
+def message():
     data = request.get_json()
-    user_message = data.get("message")
+    user_input = data.get("message", "")
 
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[{"role": "user", "content": user_message}]
-    )
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": "あなたは共感的なカウンセラーです。"},
+                {"role": "user", "content": user_input}
+            ]
+        )
+        reply = completion.choices[0].message.content
+        return jsonify({"reply": reply})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-    return jsonify({"reply": response.choices[0].message.content})
-
+# エントリーポイント
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=10000)
