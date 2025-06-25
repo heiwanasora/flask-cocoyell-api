@@ -3,7 +3,10 @@ from openai import OpenAI
 import os
 
 app = Flask(__name__)
-client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+
+# 安全にAPIキーを読み込む（Render用）
+api_key = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=api_key)
 
 @app.route("/api/message", methods=["POST"])
 def message():
@@ -20,7 +23,11 @@ def message():
                 {"role": "user", "content": user_message}
             ]
         )
-        return jsonify({"response": response.choices[0].message.content.strip()})
+        reply = response.choices[0].message.content.strip()
+        return jsonify({"response": reply})
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+if __name__ == "__main__":
+    app.run()
