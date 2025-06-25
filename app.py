@@ -9,10 +9,9 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
-# OpenAIクライアント（最新1.30.1用）
+# ✅ base_url を削除（OpenAI 1.30.1では渡すとクラッシュする）
 client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY"),
-    base_url=os.getenv("OPENAI_API_BASE")  # 通常は指定不要。APIプロキシなど使うなら指定
+    api_key=os.getenv("OPENAI_API_KEY")
 )
 
 @app.route("/api/message", methods=["POST"])
@@ -25,7 +24,7 @@ def chat():
             return jsonify({"error": "message is required"}), 400
 
         response = client.chat.completions.create(
-            model="gpt-4o",  # 必要に応じて変更
+            model="gpt-4o",
             messages=[
                 {"role": "system", "content": "あなたは親しみやすく丁寧なアシスタントです。"},
                 {"role": "user", "content": user_input}
@@ -38,5 +37,4 @@ def chat():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-if __name__ == "__main__":
-    app.run(debug=True)
+if __name__
