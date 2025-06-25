@@ -1,35 +1,39 @@
+import os
 from flask import Flask, request, jsonify
 from openai import OpenAI
-import os
+from flask_cors import CORS
+from dotenv import load_dotenv
+
+load_dotenv()  # .envファイルがある場合に読み込む
 
 app = Flask(__name__)
+CORS(app)
 
-# ✅ APIキーをここで正しく読み込む
+# OpenAIクライアントの初期化（proxiesは使わない！）
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 @app.route("/api/message", methods=["POST"])
-def message():
+def chat():
     try:
         data = request.get_json()
         user_message = data.get("message", "")
 
         if not user_message:
-            return jsonify({"error": "メッセージが空です"}), 400
+            return jsonify({"error": "No message provided"}), 400
 
-        # ✅ 新しいOpenAI SDKの書き方（v1.30.1対応）
-        chat_response = client.chat.completions.create(
-            model="gpt-4",
+        response = client.chat.completions.create(
+            model="gpt-4o",
             messages=[
-                {"role": "system", "content": "あなたは優しく寄り添うカウンセラーAIです。"},
+                {"role": "system", "content": "あなたは思いやりのあるカウンセラーです。"},
                 {"role": "user", "content": user_message}
             ]
         )
 
-        reply = chat_response.choices[0].message.content.strip()
-        return jsonify({"response": reply})
+        ai_reply = response.choices[0].message.content
+        return jsonify({"reply": ai_reply})
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    app.run(debug=True)
