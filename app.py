@@ -1,31 +1,35 @@
 from flask import Flask, request, jsonify
-import openai
+from openai import OpenAI
 import os
 
 app = Flask(__name__)
 
-# APIキーを環境変数から取得
-openai.api_key = os.environ.get("OPENAI_API_KEY")
+# 安全にAPIキーを読み込む（Render環境変数を使う前提）
+openai_api_key = os.environ.get("OPENAI_API_KEY")
+client = OpenAI(api_key=openai_api_key)
 
 @app.route("/api/message", methods=["POST"])
 def message():
-    user_input = request.json.get("message", "")
-
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",  # または "gpt-4o"
+        data = request.get_json()
+        user_message = data.get("message", "")
+
+        if not user_message:
+            return jsonify({"error": "メッセージが空です"}), 400
+
+        response = client.chat.completions.create(
+            model="gpt-4",
             messages=[
-                {"role": "system", "content": "You are a kind assistant who responds in the same language as the user."},
-                {"role": "user", "content": user_input}
-            ],
-            temperature=0.7,
+                {"role": "system", "content": "あなたは優しく寄り添うカウンセラーAIです。"},
+                {"role": "user", "content": user_message}
+            ]
         )
-        reply = response["choices"][0]["message"]["content"]
-        return jsonify({"reply": reply})
+
+        reply = response.choices[0].message.content.strip()
+        return jsonify({"response": reply})
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=10000)
