@@ -1,11 +1,11 @@
 from flask import Flask, request, jsonify
-from openai import OpenAI
+import openai
 import os
 
 app = Flask(__name__)
 
-# 新しいOpenAIクライアントの使い方
-client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+# APIキーをセット（この形式でなければエラーになる）
+openai.api_key = os.environ.get("OPENAI_API_KEY")
 
 @app.route("/api/message", methods=["POST"])
 def message():
@@ -16,8 +16,7 @@ def message():
         if not user_message:
             return jsonify({"error": "メッセージが空です"}), 400
 
-        # 新しいメソッドでリクエストを送る
-        response = client.chat.completions.create(
+        response = openai.chat.completions.create(
             model="gpt-4",
             messages=[
                 {"role": "system", "content": "あなたは優しく寄り添うカウンセラーAIです。"},
