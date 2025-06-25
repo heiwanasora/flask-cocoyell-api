@@ -1,26 +1,31 @@
 from flask import Flask, request, jsonify
-import openai
+from openai import OpenAI
 import os
 
 app = Flask(__name__)
 
-# OpenAI APIキーの設定（最新版SDKではこう書く）
-openai.api_key = os.environ.get("OPENAI_API_KEY")
+# OpenAIクライアントの初期化（proxiesなど不要）
+client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 @app.route("/api/message", methods=["POST"])
 def message():
     user_input = request.json.get("message", "")
 
-    response = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",  # 必要なら "gpt-4o" に変更
+    response = client.chat.completions.create(
+        model="gpt-4o",  # または "gpt-3.5-turbo"
         messages=[
-            {"role": "system", "content": "You are a kind assistant who replies in the user's language."},
+            {
+                "role": "system",
+                "content": "You are a friendly assistant who always replies in the same language as the user."
+            },
             {"role": "user", "content": user_input}
         ],
         temperature=0.7,
     )
 
-    return jsonify({"reply": response.choices[0].message["content"]})
+    return jsonify({"reply": response.choices[0].message.content})
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    # Renderが指定するPORT環境変数を使用
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
