@@ -4,8 +4,7 @@ import os
 
 app = Flask(__name__)
 
-# OpenAI APIキーをRender環境変数から取得
-openai.api_key = os.environ.get("OPENAI_API_KEY")
+client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 @app.route("/")
 def home():
@@ -15,15 +14,15 @@ def home():
 def message():
     data = request.get_json()
     user_msg = data.get("message", "").strip()
-    
+
     if not user_msg:
         return jsonify({"reply": "メッセージが空でした。"}), 400
 
     try:
-        response = openai.ChatCompletion.create(
+        response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
-                {"role": "system", "content": "あなたはスミスという名前のキャラクター。誠実でクールだが、少し可愛さがある。共感を軸に、相手の心を整理し、本質的な一言を届ける役目を持つ。"},
+                {"role": "system", "content": "あなたはスミス。優しく共感し、ユーザーの心に寄り添うカウンセラーです。"},
                 {"role": "user", "content": user_msg}
             ],
             temperature=0.7,
