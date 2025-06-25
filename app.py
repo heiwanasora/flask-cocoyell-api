@@ -1,42 +1,45 @@
 from flask import Flask, request, jsonify
+from langdetect import detect
 import openai
 import os
 
 app = Flask(__name__)
-
-# 最新SDK対応（v1.30.1） ← この書き方で動作確認済み
-openai.api_key = os.environ.get("OPENAI_API_KEY")
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 @app.route("/")
 def home():
     return "CocoYell API is running."
 
 @app.route("/api/message", methods=["POST"])
-def message():
+def chat():
     data = request.get_json()
-    user_msg = data.get("message", "").strip()
+    user_message = data.get("message", "").strip()
 
-    if not user_msg:
-        return jsonify({"reply": "メッセージが空でした。"}), 400
+    # 言語を自動判定（langdetect使用）
+    try:
+        detected_lang = detect(user_message)
+    except:
+        detected_lang = "en"  # fallback（失敗時は英語にする）
+
+    # 言語に応じて system_prompt を切り替える
+    if detected_lang.startswith("ja"):
+        system_prompt = "あなたはスミス。日本語でやさしく共感し、心に寄り添うカウンセラーです。"
+    elif detected_lang.startswith("en"):
+        system_prompt = "You are Smith, a kind and empathetic counselor who gently supports the user's emotions in English."
+    else:
+        system_prompt = "You are Smith, a multilingual counselor. Please respond in the same language the user uses."
 
     try:
-        response = openai.chat.completions.create(
+        response = openai.ChatCompletion.create(
             model="gpt-4o",
             messages=[
-                {
-                    "role": "system",
-                    "content": "あなたはスミス。共感と整理、そして本音を引き出すメンタルサポーターです。"
-                },
-                {
-                    "role": "user",
-                    "content": user_msg
-                }
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}
             ],
             temperature=0.7,
             max_tokens=500
         )
         reply = response.choices[0].message.content.strip()
         return jsonify({"reply": reply})
-
     except Exception as e:
-        return jsonify({"reply": f"OpenAIエラー: {str(e)}"}), 500
+        return jsonify({"reply": f"エラーが発生しました: {str(e)}"}), 500
