@@ -3,22 +3,30 @@ from flask_cors import CORS
 import openai
 import os
 
-# Flask初期化
+# Flaskアプリ初期化
 app = Flask(__name__)
 CORS(app)
 
-# OpenAIのAPIキーを環境変数から取得
+# OpenAI APIキーを環境変数から取得
 openai.api_key = os.environ.get("OPENAI_API_KEY")
 
+# ✅ Railwayの "/" チェック用ルート
+@app.route("/")
+def index():
+    return "✅ CocoYell Flask API is running."
+
+# ✅ メインのAI応答エンドポイント
 @app.route("/api/message", methods=["POST"])
 def message():
     try:
+        # リクエストボディを取得
         data = request.get_json()
-        user_message = data.get("message", "")
+        user_message = data.get("message", "").strip()
 
         if not user_message:
-            return jsonify({"error": "No message provided"}), 400
+            return jsonify({"error": "メッセージが空です"}), 400
 
+        # OpenAI GPT-4への問い合わせ
         response = openai.ChatCompletion.create(
             model="gpt-4",
             messages=[
@@ -33,9 +41,9 @@ def message():
         return jsonify({"response": ai_reply})
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": f"サーバーエラー: {str(e)}"}), 500
 
-# Railwayが自動でPORT環境変数を使う
+# ✅ Railwayでのポート設定
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
