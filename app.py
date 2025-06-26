@@ -1,34 +1,41 @@
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 import openai
 import os
-from dotenv import load_dotenv
-from flask_cors import CORS
 
-load_dotenv()
-openai.api_key = os.getenv("OPENAI_API_KEY")  # ✅ ← こっちの書き方！
-
+# Flask初期化
 app = Flask(__name__)
 CORS(app)
 
-@app.route("/api/message", methods=["POST"])
-def chat():
-    user_input = request.json.get("message", "")
-    if not user_input:
-        return jsonify({"error": "No input"}), 400
+# OpenAIのAPIキーを環境変数から取得
+openai.api_key = os.environ.get("OPENAI_API_KEY")
 
+@app.route("/api/message", methods=["POST"])
+def message():
     try:
+        data = request.get_json()
+        user_message = data.get("message", "")
+
+        if not user_message:
+            return jsonify({"error": "No message provided"}), 400
+
         response = openai.ChatCompletion.create(
-            model="gpt-4o",
+            model="gpt-4",
             messages=[
-                {"role": "system", "content": "あなたは共感的なアドバイザーです。"},
-                {"role": "user", "content": user_input}
+                {"role": "system", "content": "あなたはやさしいカウンセラーです。"},
+                {"role": "user", "content": user_message}
             ],
-            max_tokens=200
+            max_tokens=1000,
+            temperature=0.7
         )
-        reply = response["choices"][0]["message"]["content"]
-        return jsonify({"response": reply})
+
+        ai_reply = response["choices"][0]["message"]["content"]
+        return jsonify({"response": ai_reply})
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# Railwayが自動でPORT環境変数を使う
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
