@@ -6,8 +6,9 @@ import os
 app = Flask(__name__)
 CORS(app)
 
-# OpenAIのAPIキーを環境変数から取得
+# 環境変数からOpenAIのAPIキーとOrganization IDを取得
 openai.api_key = os.environ.get("OPENAI_API_KEY")
+openai.organization = os.environ.get("OPENAI_ORG_ID")  # 新方式では必須！
 
 @app.route('/')
 def home():
@@ -22,9 +23,9 @@ def message():
         if not user_message:
             return jsonify({"error": "メッセージが空です"}), 400
 
-        # ChatGPTへ問い合わせ
+        # ChatGPTに問い合わせ
         response = openai.ChatCompletion.create(
-            model="gpt-4o",  # gpt-3.5-turbo でもOK
+            model="gpt-4o",  # 必要に応じて gpt-3.5-turbo に変更OK
             messages=[{"role": "user", "content": user_message}]
         )
 
