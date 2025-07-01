@@ -6,7 +6,6 @@ import os
 app = Flask(__name__)
 CORS(app)
 
-# OpenAIのAPIキーを環境変数から取得
 openai.api_key = os.environ.get("OPENAI_API_KEY")
 
 @app.route('/')
@@ -18,7 +17,7 @@ def message():
     try:
         data = request.get_json()
         user_message = data.get("message", "")
-        user_name = data.get("name", "あなた")
+        user_name = data.get("nickname", "あなた")  # ← Flutterと連携OK
 
         if not user_message:
             return jsonify({"error": "メッセージが空です"}), 400
