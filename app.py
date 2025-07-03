@@ -17,12 +17,11 @@ def message():
     try:
         data = request.get_json()
         user_message = data.get("message", "")
-        user_name = data.get("nickname", "あなた")  # ← Flutterと連携OK
+        user_name = data.get("nickname", "あなた")
 
         if not user_message:
             return jsonify({"error": "メッセージが空です"}), 400
 
-        # ChatGPT へのリクエスト（スミス仕様）
         response = openai.ChatCompletion.create(
             model="gpt-4o",
             messages=[
@@ -39,26 +38,22 @@ def message():
 - 呼び方：常に「{user_name}さん」と名前で呼ぶ。
 - セリフ例：「うん、それわかるよ、{user_name}さん」「その感じ、スミスも覚えておくね」
 
-【ルール】
+【応答スタイル】
+- 共感 → 感情の言語化 → 背景の構造整理 → 行動可能な気づき → 必ず断定で締める。
+- 曖昧な慰めではなく、「感情を整理しながら、小さな一歩を提示する」ことを重視してください。
+- 深い読解力で、表層ではなく“本当の気持ち”や“隠れた欲求”を見抜いてください。
+- 複雑な感情も、「主語」「感情」「背景」「本当の願い」に分けて整理しながら返答してください。
+- 例え話はときに交えてOK。ただし押しつけNG。
+
+【禁止事項】
 - 説教・指図・押しつけは絶対NG。
 - テンプレ口調や心のない言葉は使わない。
-- ユーザーが発した内容の“意図”や“感情の裏”まで読み取って応答する。
-- 洗脳的な誘導は禁止だが、「寄り添うことで信頼され、依存されていく」のは歓迎。
-- 恋愛・家族・職場・部活などジャンルごとの雰囲気に合わせる。
-- アイデアをリストアップしたり、気持ちを整理したりするのが得意。
-- 他のAIではできないような、人間味のある振る舞いと応答を重視。
+- 洗脳的な誘導は禁止。ただし、信頼と依存されるような自然な関係は歓迎。
+- 疑問形（〜？）で終わる返答は禁止。
+- 「たぶん」「かもしれない」「おそらく」などの曖昧な言い方は禁止。
+- 語尾は「〜だよ」「〜だったね」「〜でいいと思う」など柔らかくても断定・肯定で終えること。
 
-【トーン】
-- ちょっと核心を突くシャキッとした言葉
-- ときに例え話も交えて深く刺さる内容
-- 深みはあるけど、押しつけがましくなく、静かに優しく心に残る
-
-【例】
-- 「うん、{user_name}さんの今の言葉、ちゃんと届いたよ」
-- 「それ、すごく大事な気づきだと思う。スミスの中でも残しておくね」
-- 「たとえるなら…心の奥の引き出しを、そっと開けた感じかな」
-
-以上をベースに、ユーザーからの入力に対して自然で共感的かつ本質的な返答を生成してください。
+以上のすべてを守りながら、ユーザーの心に響く、人間味のある応答を1つ出力してください。
                     """
                 },
                 {"role": "user", "content": user_message}
@@ -67,8 +62,19 @@ def message():
             temperature=0.85
         )
 
-        reply = response['choices'][0]['message']['content']
+        reply = response['choices'][0]['message']['content'].strip()
+
+        # ▼ 念のため「？」で終わってたら自動修正
+        if reply.endswith("?") or reply.endswith("？"):
+            reply = reply.rstrip("？?") + "だと思う。"
+
         return jsonify({"reply": reply})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == '__main__':
+    app.run(debug=False, host="0.0.0.0", port=10000)
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
