@@ -2,19 +2,16 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os, base64
-from openai import OpenAI
 import openai
 
 # === Flask設定 ===
 app = Flask(__name__)
 CORS(app)
 
-# === OpenAI設定（Render互換） ===
-api_key = os.getenv("OPENAI_API_KEY")
-openai.api_key = api_key
-client = OpenAI()  # proxies問題を回避
+# === OpenAIキー設定 ===
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
-# === スタイル定義 ===
+# === スミス会話プロンプト ===
 NORMAL_STYLE = """
 あなたは「スミス」。心を整理するAIカウンセラーです。
 共感と比喩を使って静かに導きます。相手の名前を呼びかけながら、
@@ -22,6 +19,7 @@ NORMAL_STYLE = """
 最後は「どうかな？いいよね」で締めます。
 """
 
+# === カメラ共有スタイル ===
 CONTEXT_IMAGE_STYLE = """
 あなたはAI「スミス」。
 送られた写真は“雰囲気を感じる”ためだけに使います。
@@ -44,10 +42,11 @@ CONTEXT_IMAGE_STYLE = """
 }
 """
 
-# === ルート確認 ===
+# === 動作確認用 ===
 @app.route("/")
 def home():
-    return "✅ CocoYell API running", 200
+    return "✅ CocoYell API running (safe OpenAI mode)", 200
+
 
 # === テキスト通信API ===
 @app.route("/api/message", methods=["POST"])
@@ -66,43 +65,41 @@ def message():
         if not user_message and not image_urls:
             return jsonify({"reply": "メッセージが空でした。"}), 200
 
-        # メッセージ作成
         user_content = []
         if user_message:
             user_content.append({"type": "text", "text": f"{user_name}: {user_message}"})
         for url in image_urls:
             user_content.append({"type": "image_url", "image_url": {"url": url}})
 
-        # OpenAI呼び出し
-        resp = client.chat.completions.create(
+        # ✅ proxies問題なしAPI呼び出し
+        resp = openai.ChatCompletion.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": NORMAL_STYLE},
-                {"role": "user", "content": user_content}
+                {"role": "user", "content": user_content},
             ],
             max_tokens=800,
             temperature=0.8,
         )
 
-        reply = resp.choices[0].message.content.strip()
+        reply = resp["choices"][0]["message"]["content"].strip()
         return jsonify({"reply": reply}), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
-# === カメラ共有API（褒め＋共感＋質問） ===
+# === カメラ褒めAPI ===
 @app.route("/api/vision_question", methods=["POST"])
 def vision_question():
     if "image" not in request.files:
         return jsonify({"error": "image required"}), 400
-
     try:
         image = request.files["image"].read()
         nickname = request.form.get("nickname", "あなた")
         b64 = base64.b64encode(image).decode()
 
-        resp = client.chat.completions.create(
+        resp = openai.ChatCompletion.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": CONTEXT_IMAGE_STYLE},
@@ -113,10 +110,11 @@ def vision_question():
             ],
             temperature=0.6,
             max_tokens=300,
-            response_format={"type": "json_object"}
+            response_format={"type": "json_object"},
         )
 
-        return jsonify(resp.choices[0].message.parsed), 200
+        parsed = resp["choices"][0]["message"]["content"]
+        return jsonify(parsed), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
