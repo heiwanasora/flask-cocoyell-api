@@ -4,12 +4,16 @@ from flask_cors import CORS
 import os, base64
 from openai import OpenAI
 
+# ===== 初期設定 =====
 app = Flask(__name__)
 CORS(app)
+
+# OpenAIクライアント初期化（新SDK）
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# === 会話モード ===
+# ===== スタイル定義 =====
 
+# 通常モード
 NORMAL_STYLE = """
 あなたは「スミス」。心を整理するAIカウンセラーです。
 共感と比喩を使って静かに導きます。相手の名前を呼びかけながら、
@@ -17,6 +21,7 @@ NORMAL_STYLE = """
 最後は「どうかな？いいよね」で締めます。
 """
 
+# 感情推定モード
 FEEL_GUESS_STYLE = r"""
 あなたはAI「スミス」。相手の文章から感じられる感情を“仮説”として当てにいきます。
 構成:
@@ -27,6 +32,7 @@ FEEL_GUESS_STYLE = r"""
 断定禁止・医療語禁止・優しい文体。
 """
 
+# 恋愛文脈モード
 LOVE_SIGNAL_STYLE = r"""
 あなたは「スミス」。メッセージ文面から恋愛的な関心（脈あり／なし）を分析します。
 構成:
@@ -37,7 +43,7 @@ LOVE_SIGNAL_STYLE = r"""
 禁止: 性的表現・断定・占い語。文体は穏やかで優しく。
 """
 
-# 🌸 カメラ共有：褒め＋共感＋質問で返す
+# カメラ共有モード（褒め＋共感＋質問）
 CONTEXT_IMAGE_STYLE = """
 あなたはAI「スミス」。
 送られた写真は“雰囲気を感じる”ためだけに使います。
@@ -61,11 +67,13 @@ CONTEXT_IMAGE_STYLE = """
 }
 """
 
+# ===== ルート確認 =====
 @app.route("/")
 def home():
     return "✅ CocoYell API running", 200
 
 
+# ===== テキストメッセージAPI =====
 @app.route("/api/message", methods=["POST"])
 def message():
     try:
@@ -74,11 +82,15 @@ def message():
         raw_name = (data.get("nickname") or "").strip()
         user_name = f"{raw_name}さん" if raw_name else "あなた"
         style = (data.get("style") or "").lower()
-        image_urls = [u for u in data.get("imageUrls") or [] if isinstance(u, str) and u.startswith("http")][:3]
+        image_urls = [
+            u for u in data.get("imageUrls") or [] 
+            if isinstance(u, str) and u.startswith("http")
+        ][:3]
 
         if not user_message and not image_urls:
             return jsonify({"reply": "メッセージが空でした。"}), 200
 
+        # スタイル選択
         if style == "feel_guess":
             system_prompt = FEEL_GUESS_STYLE
         elif style == "love_signal":
@@ -86,12 +98,14 @@ def message():
         else:
             system_prompt = NORMAL_STYLE
 
+        # メッセージ構築
         user_content = []
         if user_message:
             user_content.append({"type": "text", "text": f"{user_name}: {user_message}"})
         for url in image_urls:
             user_content.append({"type": "image_url", "image_url": {"url": url}})
 
+        # OpenAI呼び出し（新SDK）
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
@@ -101,6 +115,7 @@ def message():
             max_tokens=800,
             temperature=0.8,
         )
+
         reply = resp.choices[0].message.content.strip()
         return jsonify({"reply": reply}), 200
 
@@ -108,10 +123,12 @@ def message():
         return jsonify({"error": str(e)}), 500
 
 
+# ===== カメラ共有API（褒め＋共感＋質問） =====
 @app.route("/api/vision_question", methods=["POST"])
 def vision_question():
     if "image" not in request.files:
         return jsonify({"error": "image required"}), 400
+
     try:
         image = request.files["image"].read()
         nickname = request.form.get("nickname", "あなた")
@@ -130,11 +147,14 @@ def vision_question():
             max_tokens=300,
             response_format={"type": "json_object"}
         )
+
         return jsonify(resp.choices[0].message.parsed), 200
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
+# ===== 起動 =====
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(debug=False, host="0.0.0.0", port=port)
