@@ -1,119 +1,203 @@
 # app.py
 import os
-import re
 import json
-from flask import Flask, request, jsonify
+from typing import Any, Dict, List
+from flask import Flask, request, jsonify, make_response
 from flask_cors import CORS
 from openai import OpenAI
 
+# -------- Flask 基本設定 --------
 app = Flask(__name__)
 CORS(app)
-
 app.config['JSON_AS_ASCII'] = False
 app.config['JSONIFY_MIMETYPE'] = 'application/json; charset=utf-8'
 
+# -------- OpenAI --------
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# --- 改良済みプロンプト（文脈整合＋自然な例文生成） ---
-LINE_CONTEXT_STYLE = """
-あなたは「スミス」。日本語で話す、親しい友達のような恋愛相談相手。
+# -------- 環境変数（文脈＆閾値） --------
+SMITH_CONTEXT = os.getenv("SMITH_CONTEXT", "恋愛")  # 例: 恋愛 / 友人 / 仕事
+POS_TH = int(os.getenv("SMITH_POSITIVE_THRESHOLD", "70"))  # 脈ありの下限
+NEU_TH = int(os.getenv("SMITH_NEUTRAL_THRESHOLD", "40"))   # 様子見の下限（脈なしはそれ未満）
+STATUS_OVERRIDE = os.getenv("SMITH_STATUS_OVERRIDE", "0") == "1"  # 1でスコアによる強制上書き
 
-【目的】
-ユーザーの発言から、感情・意図・脈の傾向を分析し、
-その理由と「自然で文脈に合った」返し方を提示する。
+# -------- 表示ユーティリティ --------
+def hearts(score: int) -> str:
+    score = max(0, min(100, int(score)))
+    filled = min(5, (score + 19) // 20)
+    return "❤️" * filled + "🤍" * (5 - filled)
 
-【出力フォーマット（厳守）】
-1行目：ひとことで印象や判断（自然文）
-REASONS:
-- 判断理由を2〜3個（各40字以内）
-- できるだけユーザー発言の引用を入れる（「…」）
-SCORE: 0〜100（100 = 強い好意）
-COMMENT: 状況を一文でまとめる
-アドバイス: 次に送ると良い返しを1行（絵文字は1つまで）
-EXAMPLE: 実際に送ると良い「例文」を1行
-  - 質問形でも断定形でもよい
-  - ただし文脈と理由に整合すること（矛盾NG）
-  - 新しい情報や誘い（デート提案など）は、文脈に示唆がある場合のみ
-  - 自然で親しみやすい日本語。口調を急に変えない
-  - 40字以内を目安に簡潔に
+def tone_label(score: int) -> str:
+    s = max(0, min(100, int(score)))
+    if s <= 20: return "cold"
+    if s <= 40: return "cool"
+    if s <= 60: return "neutral"
+    if s <= 80: return "warm"
+    return "hot"
 
-【禁止】
-JSON、英語、コードブロック、見出しタイトル。
-自然な日本語文のみ。
+def status_from_score(score: int) -> str:
+    if score >= POS_TH:
+        return "脈あり"
+    if score >= NEU_TH:
+        return "様子見"
+    return "脈なし"
+
+# -------- 厳格JSONプロンプト（感情カウンセラー＋文脈） --------
+LINE_CONTEXT_STYLE = f"""
+あなたは「スミス」。日本語で話す、共感と洞察に優れた感情カウンセラー。
+対象の会話ジャンル（文脈）: {SMITH_CONTEXT}
+
+会話テキストから「脈あり/様子見/脈なし」を判定し、相手が文章で何を意図しているかを特定し、
+理由とスコア、具体的な例文までを返す。
+
+必ず **日本語のみ**・**厳密なJSON** で出力し、余分な文字は一切出さない。
+JSONスキーマ:
+{{
+  "status": "脈あり" | "様子見" | "脈なし",
+  "intent": "相手は文章で何を意図/感情として伝えているか一言で",
+  "analysis": "スミスの解析（2〜3文・共感＋洞察）",
+  "reasons": ["根拠1(40字以内・必要なら「…」で引用)", "根拠2", "根拠3"],
+  "score": 0-100 の整数（100=強い好意・信頼）,
+  "advice": "次の一歩の提案を1行（カタカナ見出し不要・値だけ）",
+  "example": "文脈と整合する一言（40字以内・過剰な誘い禁止・質問形可）"
+}}
+制約:
+- "reasons" は2〜3個、各40字以内。引用は「…」を用いる。
+- "example" は文脈と整合。無根拠の誘い（突然のデート/泊まり/旅行/告白など）禁止。
+- 質問形は可。ただし矛盾はNG。句読点や記号の連続禁止。
+- 出力は上記JSONのみ。前後の説明・コードブロック・見出し・英語は禁止。
 """
 
-# --- OpenAI呼び出し関数 ---
-def generate_reply(user_input: str):
-    system_prompt = LINE_CONTEXT_STYLE
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_input},
-    ]
-
-    completion = client.chat.completions.create(
+# -------- モデル呼び出し --------
+def call_model(user_text: str) -> Dict[str, Any]:
+    resp = client.chat.completions.create(
         model="gpt-4o-mini",
-        messages=messages,
-        temperature=0.8,
+        temperature=0.6,  # 再現性寄り
+        messages=[
+            {"role": "system", "content": LINE_CONTEXT_STYLE},
+            {"role": "user", "content": user_text}
+        ],
+        response_format={"type": "json_object"}
     )
+    content = (resp.choices[0].message.content or "").strip()
+    # 万一コードフェンスが混ざる環境の保険
+    if content.startswith("```"):
+        content = content.strip("`")
+        i = content.find("{")
+        if i != -1:
+            content = content[i:]
+    try:
+        data = json.loads(content)
+    except Exception:
+        # フォールバック（JSONで返らなかった場合）
+        data = {
+            "status": "様子見",
+            "intent": "慎重に様子を見ながら距離を測っている",
+            "analysis": "出力の整形に失敗しましたが、中庸な反応です。",
+            "reasons": ["JSON形式で出てこなかったため暫定判断。"],
+            "score": 50,
+            "advice": "無理せず落ち着いてやり取りを続けよう😊",
+            "example": "気づいたことがあれば、ゆっくり話そう。"
+        }
 
-    content = completion.choices[0].message.content.strip()
-    return parse_response(content)
+    # 正規化
+    try:
+        score = int(data.get("score", 50))
+    except Exception:
+        score = 50
+    score = max(0, min(100, score))
 
+    model_status = (data.get("status") or "").strip()
+    if model_status not in ("脈あり", "様子見", "脈なし"):
+        model_status = ""
 
-# --- 出力整形 ---
-def parse_response(text: str):
-    reply_match = re.search(r"^(.*?)\n?REASONS:", text, re.S)
-    reasons_block = re.search(r"REASONS:\s*(.*?)\nSCORE:", text, re.S)
-    score_match = re.search(r"SCORE:\s*(\d+)", text)
-    comment_match = re.search(r"COMMENT:\s*(.*?)\n", text)
-    advice_match = re.search(r"アドバイス:\s*(.*?)\n", text)
-    example_match = re.search(r"EXAMPLE:\s*(.*)", text)
+    # 閾値によるステータス（補完 or 上書き）
+    score_status = status_from_score(score)
+    if STATUS_OVERRIDE or not model_status:
+        final_status = score_status
+    else:
+        final_status = model_status
 
-    reply = reply_match.group(1).strip() if reply_match else text
-    reasons_raw = reasons_block.group(1).strip() if reasons_block else ""
-    score = int(score_match.group(1)) if score_match else 50
-    comment = comment_match.group(1).strip() if comment_match else ""
-    advice = advice_match.group(1).strip() if advice_match else ""
-    example = example_match.group(1).strip() if example_match else ""
+    reasons: List[str] = [str(x).strip() for x in (data.get("reasons") or []) if str(x).strip()]
+    reasons = reasons[:3]
 
-    # --- 軽い整形・辻褄合わせ ---
-    reasons = re.findall(r"(?:-|\d+\.?)\s*(.+)", reasons_raw)
-    example = re.sub(r"^\s*例えば[、,:]\s*", "", example)
-    example = re.sub(r"[。、]{2,}$", "。", example)
-
-    # 文脈に不自然な誘い系を防ぐ（例：唐突な「旅行しよう」など）
-    if re.search(r"(突然会おう|明日デート|結婚|同棲|泊ま|旅行|キスしよう)", example):
-        example = "もう少し相手の気持ちを探るように聞いてみよう。"
-
-    if len(example) > 45:
-        example = example[:45].rstrip("、。！？!?") + "。"
-
-    hearts = "❤️" * int(score / 20) + "🤍" * (5 - int(score / 20))
-
-    return {
-        "reply": f"{reply}\n\n理由:\n" + "\n".join([f"・{r}" for r in reasons]) + f"\n\n{hearts}   SCORE: {score}\nアドバイス: {advice}\n例文: {example}",
+    cleaned = {
+        "status": final_status,
+        "intent": (data.get("intent") or "").strip(),
+        "analysis": (data.get("analysis") or "").strip(),
+        "reasons": reasons,
         "score": score,
-        "hearts": hearts,
-        "advice": advice,
-        "example": example,
+        "advice": (data.get("advice") or "").strip(),
+        "example": (data.get("example") or "").strip(),
     }
 
+    # 軽い整形／安全弁
+    banned = ("結婚", "同棲", "泊ま", "旅行", "キスしよう")
+    if any(x in cleaned["example"] for x in banned):
+        cleaned["example"] = "負担にならない範囲で、気持ちを少し教えてくれる？"
+    cleaned["example"] = cleaned["example"].replace("。。", "。").replace("、、", "、").strip(" 　")
+    for i, r in enumerate(cleaned["reasons"]):
+        cleaned["reasons"][i] = r.replace("。。", "。").replace("、、", "、").strip(" 　")
 
-# --- Flaskルート ---
+    return cleaned
+
+# -------- API --------
 @app.route("/api/message", methods=["POST"])
 def api_message():
-    data = request.get_json()
-    user_input = data.get("text", "").strip()
-    if not user_input:
-        return jsonify({"error": "no text"}), 400
-    result = generate_reply(user_input)
-    return jsonify(result)
+    try:
+        data = request.get_json(force=True) or {}
+        # 互換: {'text': '...'} 推奨、または {'message': '...'}
+        text = (data.get("text") or data.get("message") or "").strip()
+        if not text:
+            return jsonify({"reply": "（エラー）入力が空です。", "score": 50, "hearts": "❤️❤️🤍🤍🤍"}), 400
 
+        out = call_model(text)
 
-@app.route("/", methods=["GET"])
-def health():
-    return make_response(jsonify({"status": "ok"}), 200)
+        # 既存UI互換の平文 + 追加データ
+        lines = []
+        lines.append(f"心理の要約: {out['intent'] or '（意図の要約）'}")
+        if out["reasons"]:
+            lines.append("理由:")
+            lines.extend([f"・{r}" for r in out["reasons"]])
+        lines.append("")
+        lines.append(f"スミスの解析: {out['analysis'] or '（解析）'}")
+        lines.append(f"ステータス: {out['status']} （文脈: {SMITH_CONTEXT}）")
+        lines.append(f"{hearts(out['score'])}   SCORE: {out['score']}")
+        lines.append(f"アドバイス: {out['advice']}")
+        if out["example"]:
+            lines.append(f"例文: {out['example']}")
+        reply_text = "\n".join(lines).strip()
 
+        return jsonify({
+            "reply": reply_text,
+            "status": out["status"],
+            "intent": out["intent"],
+            "analysis": out["analysis"],
+            "reasons": out["reasons"],
+            "score": out["score"],
+            "hearts": hearts(out["score"]),
+            "tone": tone_label(out["score"]),
+            "advice": out["advice"],
+            "example": out["example"],
+            "context": SMITH_CONTEXT,
+            "thresholds": {"positive": POS_TH, "neutral": NEU_TH}
+        })
+    except Exception as e:
+        return jsonify({
+            "reply": f"（サーバ例外）{e}",
+            "score": 50,
+            "hearts": "❤️❤️🤍🤍🤍",
+            "advice": "もう一度お試しください。"
+        }), 200
+
+@app.get("/")
+def root():
+    return make_response(jsonify({
+        "ok": True,
+        "context": SMITH_CONTEXT,
+        "thresholds": {"positive": POS_TH, "neutral": NEU_TH},
+        "status_override": STATUS_OVERRIDE
+    }), 200)
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)
