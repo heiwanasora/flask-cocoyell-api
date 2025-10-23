@@ -6,22 +6,19 @@ from flask import Flask, request, jsonify, make_response
 from flask_cors import CORS
 from openai import OpenAI
 
-# -------- Flask 基本設定 --------
 app = Flask(__name__)
 CORS(app)
 app.config['JSON_AS_ASCII'] = False
 app.config['JSONIFY_MIMETYPE'] = 'application/json; charset=utf-8'
 
-# -------- OpenAI --------
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# -------- 環境変数（文脈＆閾値） --------
-SMITH_CONTEXT = os.getenv("SMITH_CONTEXT", "恋愛")  # 例: 恋愛 / 友人 / 仕事
-POS_TH = int(os.getenv("SMITH_POSITIVE_THRESHOLD", "70"))  # 脈ありの下限
-NEU_TH = int(os.getenv("SMITH_NEUTRAL_THRESHOLD", "40"))   # 様子見の下限（脈なしはそれ未満）
-STATUS_OVERRIDE = os.getenv("SMITH_STATUS_OVERRIDE", "0") == "1"  # 1でスコアによる強制上書き
+# ---- 文脈&閾値（環境変数で調整可） ----
+SMITH_CONTEXT = os.getenv("SMITH_CONTEXT", "恋愛")
+POS_TH = int(os.getenv("SMITH_POSITIVE_THRESHOLD", "70"))
+NEU_TH = int(os.getenv("SMITH_NEUTRAL_THRESHOLD", "40"))
+STATUS_OVERRIDE = os.getenv("SMITH_STATUS_OVERRIDE", "0") == "1"
 
-# -------- 表示ユーティリティ --------
 def hearts(score: int) -> str:
     score = max(0, min(100, int(score)))
     filled = min(5, (score + 19) // 20)
@@ -36,13 +33,11 @@ def tone_label(score: int) -> str:
     return "hot"
 
 def status_from_score(score: int) -> str:
-    if score >= POS_TH:
-        return "脈あり"
-    if score >= NEU_TH:
-        return "様子見"
+    if score >= POS_TH: return "脈あり"
+    if score >= NEU_TH: return "様子見"
     return "脈なし"
 
-# -------- 厳格JSONプロンプト（感情カウンセラー＋文脈） --------
+# ---- プロンプト（厳格JSONで返す指示。*出力*は後段で安全パース） ----
 LINE_CONTEXT_STYLE = f"""
 あなたは「スミス」。日本語で話す、共感と洞察に優れた感情カウンセラー。
 対象の会話ジャンル（文脈）: {SMITH_CONTEXT}
@@ -61,40 +56,42 @@ JSONスキーマ:
   "advice": "次の一歩の提案を1行（カタカナ見出し不要・値だけ）",
   "example": "文脈と整合する一言（40字以内・過剰な誘い禁止・質問形可）"
 }}
-制約:
-- "reasons" は2〜3個、各40字以内。引用は「…」を用いる。
-- "example" は文脈と整合。無根拠の誘い（突然のデート/泊まり/旅行/告白など）禁止。
-- 質問形は可。ただし矛盾はNG。句読点や記号の連続禁止。
-- 出力は上記JSONのみ。前後の説明・コードブロック・見出し・英語は禁止。
 """
 
-# -------- モデル呼び出し --------
+# ---- OpenAI呼び出し（安全にテキスト化→JSONパース） ----
 def call_model(user_text: str) -> Dict[str, Any]:
     resp = client.chat.completions.create(
         model="gpt-4o-mini",
-        temperature=0.6,  # 再現性寄り
+        temperature=0.6,
         messages=[
             {"role": "system", "content": LINE_CONTEXT_STYLE},
-            {"role": "user", "content": user_text}
+            {"role": "user", "content": user_text},
         ],
-        response_format={"type": "json_object"}
+        # NOTE: 古い環境での文字化け/バイナリ化を避けるため、response_formatは使わない
     )
-    content = (resp.choices[0].message.content or "").strip()
-    # 万一コードフェンスが混ざる環境の保険
+
+    content = resp.choices[0].message.content
+    if isinstance(content, bytes):
+        # 念のため：バイナリで来た場合はUTF-8で復号
+        content = content.decode("utf-8", errors="ignore")
+    content = (content or "").strip()
+
+    # もし ```json ... ``` で囲まれてきたら剥がす
     if content.startswith("```"):
         content = content.strip("`")
         i = content.find("{")
         if i != -1:
             content = content[i:]
+
+    # JSONパース（失敗時はフォールバック）
     try:
         data = json.loads(content)
     except Exception:
-        # フォールバック（JSONで返らなかった場合）
         data = {
             "status": "様子見",
-            "intent": "慎重に様子を見ながら距離を測っている",
+            "intent": "慎重に様子を見ている",
             "analysis": "出力の整形に失敗しましたが、中庸な反応です。",
-            "reasons": ["JSON形式で出てこなかったため暫定判断。"],
+            "reasons": ["JSONで受け取れなかったため暫定判断。"],
             "score": 50,
             "advice": "無理せず落ち着いてやり取りを続けよう😊",
             "example": "気づいたことがあれば、ゆっくり話そう。"
@@ -111,12 +108,8 @@ def call_model(user_text: str) -> Dict[str, Any]:
     if model_status not in ("脈あり", "様子見", "脈なし"):
         model_status = ""
 
-    # 閾値によるステータス（補完 or 上書き）
     score_status = status_from_score(score)
-    if STATUS_OVERRIDE or not model_status:
-        final_status = score_status
-    else:
-        final_status = model_status
+    final_status = score_status if (STATUS_OVERRIDE or not model_status) else model_status
 
     reasons: List[str] = [str(x).strip() for x in (data.get("reasons") or []) if str(x).strip()]
     reasons = reasons[:3]
@@ -141,19 +134,17 @@ def call_model(user_text: str) -> Dict[str, Any]:
 
     return cleaned
 
-# -------- API --------
+# ---- API ----
 @app.route("/api/message", methods=["POST"])
 def api_message():
     try:
         data = request.get_json(force=True) or {}
-        # 互換: {'text': '...'} 推奨、または {'message': '...'}
         text = (data.get("text") or data.get("message") or "").strip()
         if not text:
             return jsonify({"reply": "（エラー）入力が空です。", "score": 50, "hearts": "❤️❤️🤍🤍🤍"}), 400
 
         out = call_model(text)
 
-        # 既存UI互換の平文 + 追加データ
         lines = []
         lines.append(f"心理の要約: {out['intent'] or '（意図の要約）'}")
         if out["reasons"]:
@@ -180,7 +171,7 @@ def api_message():
             "advice": out["advice"],
             "example": out["example"],
             "context": SMITH_CONTEXT,
-            "thresholds": {"positive": POS_TH, "neutral": NEU_TH}
+            "thresholds": {"positive": POS_TH, "neutral": NEU_TH},
         })
     except Exception as e:
         return jsonify({
