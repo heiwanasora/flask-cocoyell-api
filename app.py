@@ -1,12 +1,11 @@
-# app.py
 import os
+import re
 from flask import Flask, request, jsonify, make_response
 from flask_cors import CORS
 from openai import OpenAI
 
 app = Flask(__name__)
 
-# /api/* だけCORS許可（プリフライト含む）
 CORS(app,
      resources={r"/api/*": {"origins": "*"}},
      supports_credentials=False)
@@ -16,27 +15,62 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 LINE_CONTEXT_STYLE = """
 あなたは「スミス」。日本語だけで話す、親しい友達のような相談相手。
 【目的】LINEやチャットのやり取りを読み、温度感・距離感を感じ取り、
-友達に話すように「脈あり / 様子見 / 脈なし」の印象を自然文で伝える。
-【出力】JSON/箇条書き/英語/コードブロックは出さない。日本語の文章のみ。
-1行目：判定ひとこと。続けて理由。必要なら様子見ポイント。最後に返し例を > で1〜2個。
+「脈あり / 様子見 / 脈なし」の印象を自然文で伝える。
+さらに、感情の温度差を0〜100点でスコア化し、
+SCORE: (0〜100)
+COMMENT: （理由・印象をやさしく説明）
+ADVICE: （返しの提案を1行で）
+この3つを出力してください。
+JSONや英語は使わないでください。
 """
 
-def _line_context_reply(nickname: str, thread: list[dict]) -> str:
+def hearts(score: int) -> str:
+    """スコアをハート5段階に変換"""
+    if score <= 20: return "❤️🤍🤍🤍🤍"
+    if score <= 40: return "❤️❤️🤍🤍🤍"
+    if score <= 60: return "❤️❤️❤️🤍🤍"
+    if score <= 80: return "❤️❤️❤️❤️🤍"
+    return "❤️❤️❤️❤️❤️"
+
+def tone_label(score: int) -> str:
+    if score <= 20: return "cold"
+    elif score <= 40: return "cool"
+    elif score <= 60: return "neutral"
+    elif score <= 80: return "warm"
+    else: return "hot"
+
+def _line_context_reply(nickname: str, thread: list[dict]) -> dict:
     convo = "\n".join([f'{m.get("sender","me")}: {(m.get("text") or "").strip()}'
                        for m in thread])
+
     res = client.chat.completions.create(
         model="gpt-4o-mini",
         temperature=0.9,
         messages=[
             {"role": "system", "content": LINE_CONTEXT_STYLE},
-            {"role": "user", "content": f"{nickname}との会話ログ:\n{convo}\n\n上のルールで返答してください。"}
+            {"role": "user", "content": f"{nickname}との会話ログ:\n{convo}\n\n上のルールで出力してください。"}
         ],
         max_tokens=700
     )
-    text = (res.choices[0].message.content or "").strip()
-    if text.startswith("{") or text.startswith("["):
-        text = "様子見。\n形式的になっていたから、自然文で出直すね。\n> 来週の平日夜か週末ランチならどっちが合いそう？"
-    return text
+
+    raw = (res.choices[0].message.content or "").strip()
+
+    # スコアなどを抽出
+    score_match = re.search(r"SCORE[:：]\s*(\d+)", raw)
+    comment_match = re.search(r"COMMENT[:：]\s*(.*)", raw)
+    advice_match = re.search(r"ADVICE[:：]\s*(.*)", raw)
+
+    score = int(score_match.group(1)) if score_match else 50
+    comment = comment_match.group(1).strip() if comment_match else raw
+    advice = advice_match.group(1).strip() if advice_match else "無理せず自然に話しかけてみて。"
+
+    return {
+        "reply": comment,
+        "score": score,
+        "hearts": hearts(score),
+        "tone": tone_label(score),
+        "advice": advice
+    }
 
 # --- LINE文脈 本命エンドポイント ---
 @app.route("/api/line_context", methods=["POST", "OPTIONS"])
@@ -47,8 +81,8 @@ def line_context():
     nickname = (data.get("nickname") or "あなた").strip()
     thread = data.get("thread") or []
     try:
-        text = _line_context_reply(nickname, thread)
-        return jsonify({"reply": text}), 200
+        result = _line_context_reply(nickname, thread)
+        return jsonify(result), 200
     except Exception as e:
         return jsonify({"reply": f"（エラー）スミスが一瞬考えすぎました：{e}"}), 200
 
@@ -62,7 +96,6 @@ def message_compat():
     text = (data.get("message") or "").strip()
     history = data.get("history") or []
 
-    # history を thread に変換し、直近入力も足す
     thread = []
     for m in history[-10:]:
         role = (m.get("role") or "user").lower()
@@ -74,8 +107,8 @@ def message_compat():
         thread.append({"sender": "me", "text": text})
 
     try:
-        out = _line_context_reply(nickname, thread)
-        return jsonify({"reply": out}), 200
+        result = _line_context_reply(nickname, thread)
+        return jsonify(result), 200
     except Exception as e:
         return jsonify({"reply": f"（エラー）スミスが一瞬考えすぎました：{e}"}), 200
 
@@ -85,7 +118,7 @@ def healthz():
 
 @app.get("/")
 def root():
-    return "✅ Smith LINE Analyzer (only) — /api/line_context, /api/message(compat)", 200
+    return "✅ Smith LINE Analyzer — now with ❤️ハート5段階＆脈ありスコア", 200
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
