@@ -1,4 +1,4 @@
-# app.py
+# app.py  — CocoYell（スミス）API：時系列ログ対応版
 import os
 import re
 import json
@@ -9,7 +9,7 @@ from openai import OpenAI
 
 # ---------- Flask 基本設定 ----------
 app = Flask(__name__)
-CORS(app)
+CORS(app)  # 必要に応じて CORS(app, resources={r"/*": {"origins": ["https://your.app"]}}) に絞る
 app.config['JSON_AS_ASCII'] = False
 app.config['JSONIFY_MIMETYPE'] = 'application/json; charset=utf-8'
 
@@ -57,14 +57,45 @@ def status_from_score(score: int) -> str:
         return "様子見"
     return "脈なし"
 
-# ---------- スミス共通プロンプト ----------
-def build_system_prompt(context_name: str) -> str:
+# ---------- 時系列ログを要約（トークン節約） ----------
+def summarize_timeline(items: List[Dict[str, Any]], max_items: int = 12, max_chars: int = 140) -> str:
+    """
+    items: 古い→新しい の順で受け取り推奨
+    例の各要素: {"text": str, "genre": str, "createdAt": ISO8601, "smithReply": str}
+    """
+    if not items:
+        return ""
+    # 念のため古→新に整える（createdAt がなければ順序維持）
+    def ts_key(x):  # createdAt がない/不正でも落ちないように
+        return str(x.get("createdAt", ""))
+    try:
+        items = sorted(items, key=ts_key)
+    except Exception:
+        pass
+
+    # 末尾 max_items 件だけ
+    items = items[-max_items:]
+
+    bullets: List[str] = []
+    for it in items:
+        t = str(it.get("createdAt", ""))[:10]  # YYYY-MM-DD程度
+        g = str(it.get("genre", "")).strip()
+        x = str(it.get("text", "")).strip().replace("\n", " ")
+        if len(x) > max_chars:
+            x = x[:max_chars] + "…"
+        tag = f"[{g}]" if g else ""
+        bullets.append(f"- {t} {tag} {x}".strip())
+    return "\n".join(bullets)
+
+# ---------- スミス共通プロンプト（時系列ログを統合） ----------
+def build_system_prompt(context_name: str, timeline_bullets: str = "") -> str:
+    timeline_block = f"\n[時系列ログ]\n{timeline_bullets}\n" if timeline_bullets else ""
     return f"""
 あなたは「スミス」。日本語で話す感情カウンセラー。
 対象ジャンル: {context_name}
 
-ユーザーの会話文から相手の心理・感情を読み取り、
-理由・スコア・アドバイス・例文までを出す。
+ユーザーの文章（または会話ログ）から相手の心理・感情の推移を読み取り、
+「時系列の流れ」を踏まえて、理由・スコア・アドバイス・例文までを返す。
 
 出力は **厳密なJSON** のみ。英語禁止。スキーマ：
 {{
@@ -76,24 +107,43 @@ def build_system_prompt(context_name: str) -> str:
   "advice": "次の行動への一言アドバイス",
   "example": "自然で優しい返事の例文"
 }}
+注意:
+- 事実と推測は分ける
+- 同じ内容の繰り返しは避ける
+- 箇条書きは最大3点
+- 最初に「今回は◯◯の続きだね」の一言を analysis 内で自然に示す
+{timeline_block}
     """.strip()
 
 # ---------- モデル呼び出し ----------
-def call_model(user_text: str, context_name: str) -> Dict[str, Any]:
-    resp = client.chat.completions.create(
-        model="gpt-4o-mini",
-        temperature=0.6,
-        messages=[
-            {"role": "system", "content": build_system_prompt(context_name)},
-            {"role": "user", "content": user_text},
-        ],
-    )
+def call_model(user_text: str, context_name: str, timeline_bullets: str = "") -> Dict[str, Any]:
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.6,
+            messages=[
+                {"role": "system", "content": build_system_prompt(context_name, timeline_bullets)},
+                {"role": "user", "content": user_text},
+            ],
+        )
+        content = (resp.choices[0].message.content or "").strip()
+    except Exception as e:
+        # OpenAI 側の例外は安全にフォールバック
+        return {
+            "status": "様子見",
+            "intent": "APIエラー",
+            "analysis": f"解析に失敗しました: {e}",
+            "reasons": ["API例外により暫定判断"],
+            "score": 50,
+            "advice": "時間をおいて再送信してください。",
+            "example": "また後で続き話そう。"
+        }
 
-    content = resp.choices[0].message.content or ""
-    content = content.strip().replace("```json", "").replace("```", "")
+    # JSON 以外の装飾除去
+    content = content.replace("```json", "").replace("```", "")
     try:
         data = json.loads(content)
-    except:
+    except Exception:
         data = {
             "status": "様子見",
             "intent": "解析エラー",
@@ -113,7 +163,7 @@ def call_model(user_text: str, context_name: str) -> Dict[str, Any]:
         "status": final_status,
         "intent": data.get("intent", ""),
         "analysis": data.get("analysis", ""),
-        "reasons": data.get("reasons", [])[:3],
+        "reasons": list(data.get("reasons", []))[:3],
         "score": score,
         "advice": data.get("advice", ""),
         "example": data.get("example", "")
@@ -149,8 +199,14 @@ def _handle_message(context_name: str):
         text = (data.get("text") or "").strip()
         if not text:
             return jsonify({"reply": "入力が空です"}), 400
-        out = call_model(text, context_name)
+
+        # timeline: 古→新 の配列を想定（なければ空扱い）
+        timeline_items = data.get("timeline") or []
+        timeline_bullets = summarize_timeline(timeline_items, max_items=12, max_chars=140)
+
+        out = call_model(text, context_name, timeline_bullets=timeline_bullets)
         reply_text = build_reply_text(out, context_name)
+
         return jsonify({
             "reply": reply_text,
             "score": out["score"],
@@ -159,15 +215,16 @@ def _handle_message(context_name: str):
             "tone": tone_label(out["score"]),
             "advice": out["advice"],
             "example": out["example"],
-            "context": context_name
+            "context": context_name,
+            "used_timeline": bool(timeline_bullets),
         })
     except Exception as e:
         return jsonify({"reply": f"（サーバ例外）{e}"}), 200
 
 # ---------- LINEペースト解析 ----------
-def parse_line_thread(text: str) -> list[dict]:
+def parse_line_thread(text: str) -> List[Dict[str, str]]:
     lines = [l.strip() for l in text.splitlines() if l.strip()]
-    thread = []
+    thread: List[Dict[str, str]] = []
     for line in lines:
         m = re.match(r'^([^\:：]+)[:：](.+)$', line)
         if m:
@@ -179,7 +236,7 @@ def parse_line_thread(text: str) -> list[dict]:
         thread.append({"sender": sender, "text": msg})
     return thread
 
-def analyze_line_context(thread: list[dict], context: str):
+def analyze_line_context(thread: List[Dict[str, str]], context: str):
     convo = "\n".join(f'{m["sender"]}: {m["text"]}' for m in thread)
     return call_model(convo, context)
 
@@ -188,7 +245,7 @@ def api_line_paste():
     try:
         data = request.get_json(force=True)
         text = (data.get("text") or "").strip()
-        context = data.get("context") or "恋愛"
+        context = normalize_context(data.get("context") or "恋愛")
 
         if not text:
             return jsonify({"reply": "入力が空です"}), 400
@@ -197,11 +254,22 @@ def api_line_paste():
         out = analyze_line_context(thread, context)
 
         reply = build_reply_text(out, context)
-        return jsonify({"reply": reply, "score": out["score"], "status": out["status"]})
+        return jsonify({
+            "reply": reply,
+            "score": out["score"],
+            "status": out["status"],
+            "hearts": hearts(out["score"]),
+            "tone": tone_label(out["score"]),
+            "context": context
+        })
     except Exception as e:
         return jsonify({"reply": f"（サーバー例外）{e}"}), 200
 
-# ---------- Root ----------
+# ---------- Health / Root ----------
+@app.get("/health")
+def health():
+    return make_response(jsonify({"ok": True}), 200)
+
 @app.get("/")
 def root():
     return make_response(jsonify({
@@ -209,8 +277,10 @@ def root():
         "default_context": DEFAULT_CONTEXT,
         "thresholds": {"positive": POS_TH, "neutral": NEU_TH},
         "status_override": STATUS_OVERRIDE,
-        "endpoints": ["/api/message", "/api/line_paste"]
+        "endpoints": ["/api/message", "/api/line_paste", "/health"]
     }), 200)
 
 if __name__ == "__main__":
+    # Render などで PORT が渡される想定
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)
+
