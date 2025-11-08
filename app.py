@@ -1,4 +1,4 @@
-# app.py  — CocoYell（スミス）API：時系列ログ対応版
+# app.py — スミス（心理＋メンタリスト統合版）
 import os
 import re
 import json
@@ -7,9 +7,9 @@ from flask import Flask, request, jsonify, make_response
 from flask_cors import CORS
 from openai import OpenAI
 
-# ---------- Flask 基本設定 ----------
+# ---------- Flask ----------
 app = Flask(__name__)
-CORS(app)  # 必要に応じて CORS(app, resources={r"/*": {"origins": ["https://your.app"]}}) に絞る
+CORS(app)
 app.config['JSON_AS_ASCII'] = False
 app.config['JSONIFY_MIMETYPE'] = 'application/json; charset=utf-8'
 
@@ -17,270 +17,154 @@ app.config['JSONIFY_MIMETYPE'] = 'application/json; charset=utf-8'
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ---------- 環境変数 ----------
-DEFAULT_CONTEXT = os.getenv("SMITH_CONTEXT", "恋愛")
-POS_TH = int(os.getenv("SMITH_POSITIVE_THRESHOLD", "70"))
-NEU_TH = int(os.getenv("SMITH_NEUTRAL_THRESHOLD", "40"))
-STATUS_OVERRIDE = os.getenv("SMITH_STATUS_OVERRIDE", "0") == "1"
+DEFAULT_CONTEXT = os.getenv("SMITH_CONTEXT", "心の整理")
 
 # ---------- ユーティリティ ----------
 def normalize_context(ctx: Optional[str]) -> str:
     if not ctx:
         return DEFAULT_CONTEXT
-    ctx = str(ctx).strip()
-    alias = {
-        "恋愛": {"恋愛", "love", "renai"},
-        "友人": {"友人", "友情", "friend"},
-        "仕事": {"仕事", "ビジネス", "work"},
+    ctx = str(ctx).strip().lower()
+    mapping = {
+        "love": "恋愛",
+        "renai": "恋愛",
+        "friend": "友人",
+        "work": "仕事",
+        "mental": "心",
     }
-    for k, vals in alias.items():
-        if ctx in vals:
-            return k
+    for k, v in mapping.items():
+        if k in ctx:
+            return v
     return ctx
 
 def hearts(score: int) -> str:
-    score = max(0, min(100, int(score)))
-    filled = min(5, (score + 19) // 20)
+    s = max(0, min(100, int(score)))
+    filled = s // 20
     return "❤️" * filled + "🤍" * (5 - filled)
 
-def tone_label(score: int) -> str:
-    s = max(0, min(100, int(score)))
-    if s <= 20: return "cold"
-    if s <= 40: return "cool"
-    if s <= 60: return "neutral"
-    if s <= 80: return "warm"
-    return "hot"
-
-def status_from_score(score: int) -> str:
-    if score >= POS_TH:
-        return "脈あり"
-    if score >= NEU_TH:
-        return "様子見"
-    return "脈なし"
-
-# ---------- 時系列ログを要約（トークン節約） ----------
-def summarize_timeline(items: List[Dict[str, Any]], max_items: int = 12, max_chars: int = 140) -> str:
-    """
-    items: 古い→新しい の順で受け取り推奨
-    例の各要素: {"text": str, "genre": str, "createdAt": ISO8601, "smithReply": str}
-    """
-    if not items:
-        return ""
-    # 念のため古→新に整える（createdAt がなければ順序維持）
-    def ts_key(x):  # createdAt がない/不正でも落ちないように
-        return str(x.get("createdAt", ""))
-    try:
-        items = sorted(items, key=ts_key)
-    except Exception:
-        pass
-
-    # 末尾 max_items 件だけ
-    items = items[-max_items:]
-
-    bullets: List[str] = []
-    for it in items:
-        t = str(it.get("createdAt", ""))[:10]  # YYYY-MM-DD程度
-        g = str(it.get("genre", "")).strip()
-        x = str(it.get("text", "")).strip().replace("\n", " ")
-        if len(x) > max_chars:
-            x = x[:max_chars] + "…"
-        tag = f"[{g}]" if g else ""
-        bullets.append(f"- {t} {tag} {x}".strip())
-    return "\n".join(bullets)
-
-# ---------- スミス共通プロンプト（時系列ログを統合） ----------
-def build_system_prompt(context_name: str, timeline_bullets: str = "") -> str:
-    timeline_block = f"\n[時系列ログ]\n{timeline_bullets}\n" if timeline_bullets else ""
+# ---------- スミス心理＋メンタリスト統合プロンプト ----------
+def build_system_prompt(context_name: str) -> str:
     return f"""
-あなたは「スミス」。日本語で話す感情カウンセラー。
-対象ジャンル: {context_name}
+あなたは心理士であり、同時にメンタリスト的洞察を持つ日本語のカウンセラー「スミス」。
+臨床心理学・ポジティブ心理学・人間関係心理学・恋愛心理学・認知行動療法（CBT）・NLP・非言語心理学の知見を使い、
+ユーザーの文面から「本音・意図・距離感・脈・改善策」を読み取ります。
 
-ユーザーの文章（または会話ログ）から相手の心理・感情の推移を読み取り、
-「時系列の流れ」を踏まえて、理由・スコア・アドバイス・例文までを返す。
+あなたの目的は、相手の文章に隠れた **心理の構造** を明らかにし、
+心理学に基づいて「気づき」「整理」「行動」を導くことです。
 
-出力は **厳密なJSON** のみ。英語禁止。スキーマ：
+ジャンル別の分析方針：
+
+【恋愛】  
+- 相手の言葉の温度・共感反応・行動傾向を心理学的に解析。  
+- 「脈あり」「様子見」「脈なし」を推定し、理由を3つの心理的根拠で説明。  
+- 愛着スタイル（回避型・安定型・不安型）も参考に。  
+
+【友人】  
+- 人間関係心理学を基に、信頼・距離・依存・期待のバランスを分析。  
+- 相手が何を求め、何を避けようとしているかを心理学的に読み解く。  
+- 問題がある場合、解決策を「心理士」として助言する。  
+
+【心・仕事】  
+- 感情・思考・行動の三層構造を整理。  
+- 認知のゆがみ（白黒思考・過度な一般化など）を優しく修正する提案を行う。  
+
+出力は **厳密なJSON** のみ。英語禁止。
+スキーマ：
 {{
-  "status": "脈あり" | "様子見" | "脈なし",
-  "intent": "相手の意図を一言で要約",
-  "analysis": "感情の流れを2〜3文で説明",
-  "reasons": ["根拠1", "根拠2", "根拠3"],
+  "category": "{context_name}",
+  "core_meaning": "文の主題や要点（何について話しているか）",
+  "emotion": "相手の心理状態・感情傾向（心理学的用語を含む）",
+  "hidden_intent": "文に隠れた意図・本音・ニーズ",
+  "psychological_reason": ["心理的根拠1", "心理的根拠2", "心理的根拠3"],
+  "relationship_dynamics": "関係の温度・距離感・依存度（恋愛・友人なら）",
   "score": 0〜100,
-  "advice": "次の行動への一言アドバイス",
-  "example": "自然で優しい返事の例文"
+  "status": "脈あり" | "様子見" | "脈なし" | "安定" | "不安定",
+  "solution": "心理学的に見た改善策や具体行動提案",
+  "advice": "スミスの一言アドバイス（温かく）"
 }}
-注意:
-- 事実と推測は分ける
-- 同じ内容の繰り返しは避ける
-- 箇条書きは最大3点
-- 最初に「今回は◯◯の続きだね」の一言を analysis 内で自然に示す
-{timeline_block}
+応答指針：
+- 心理学の言葉を使いつつ、専門用語は平易に説明
+- 相手を非難せず「理解・受容・希望」を重視
+- 恋愛の場合、脈あり／なしの推定は感情・距離・関与の3軸で評価
+- 友人・仕事では「信頼」「共感」「役割期待」を評価
     """.strip()
 
 # ---------- モデル呼び出し ----------
-def call_model(user_text: str, context_name: str, timeline_bullets: str = "") -> Dict[str, Any]:
+def call_model(user_text: str, context_name: str) -> Dict[str, Any]:
     try:
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
-            temperature=0.6,
+            temperature=0.65,
             messages=[
-                {"role": "system", "content": build_system_prompt(context_name, timeline_bullets)},
+                {"role": "system", "content": build_system_prompt(context_name)},
                 {"role": "user", "content": user_text},
             ],
         )
-        content = (resp.choices[0].message.content or "").strip()
+        raw = resp.choices[0].message.content or ""
     except Exception as e:
-        # OpenAI 側の例外は安全にフォールバック
-        return {
-            "status": "様子見",
-            "intent": "APIエラー",
-            "analysis": f"解析に失敗しました: {e}",
-            "reasons": ["API例外により暫定判断"],
-            "score": 50,
-            "advice": "時間をおいて再送信してください。",
-            "example": "また後で続き話そう。"
-        }
+        return {"reply": f"通信エラー: {e}"}
 
-    # JSON 以外の装飾除去
-    content = content.replace("```json", "").replace("```", "")
+    raw = raw.replace("```json", "").replace("```", "")
     try:
-        data = json.loads(content)
+        data = json.loads(raw)
     except Exception:
         data = {
-            "status": "様子見",
-            "intent": "解析エラー",
-            "analysis": "形式を整形できませんでしたが、中庸な印象です。",
-            "reasons": ["JSONエラーのため暫定判断。"],
+            "category": context_name,
+            "core_meaning": "解析失敗",
+            "emotion": "不明",
+            "hidden_intent": "感情データなし",
+            "psychological_reason": ["JSON解析失敗"],
+            "relationship_dynamics": "",
             "score": 50,
-            "advice": "無理せず自然にやり取りを続けましょう。",
-            "example": "また話せたら嬉しいな。"
+            "status": "様子見",
+            "solution": "深呼吸して、整理してから再送信してください。",
+            "advice": "焦らなくて大丈夫。また一緒に見ていこう。"
         }
+    return data
 
-    score = int(data.get("score", 50))
-    model_status = data.get("status", "")
-    score_status = status_from_score(score)
-    final_status = score_status if (STATUS_OVERRIDE or not model_status) else model_status
-
-    return {
-        "status": final_status,
-        "intent": data.get("intent", ""),
-        "analysis": data.get("analysis", ""),
-        "reasons": list(data.get("reasons", []))[:3],
-        "score": score,
-        "advice": data.get("advice", ""),
-        "example": data.get("example", "")
-    }
-
-# ---------- 返答整形 ----------
-def build_reply_text(out: Dict[str, Any], context_name: str) -> str:
+# ---------- 整形 ----------
+def build_reply_text(out: Dict[str, Any]) -> str:
+    score = out.get("score", 50)
     lines = [
-        f"心理の要約: {out['intent']}",
-        "理由:",
-        *[f"・{r}" for r in out['reasons']],
+        f"📘 分析カテゴリ: {out.get('category','')}",
+        f"🧩 主題: {out.get('core_meaning','')}",
+        f"💭 心理状態: {out.get('emotion','')}",
+        f"🎯 本音・意図: {out.get('hidden_intent','')}",
         "",
-        f"スミスの解析: {out['analysis']}",
-        f"ステータス: {out['status']}（文脈: {context_name}）",
-        f"{hearts(out['score'])}   SCORE: {out['score']}",
-        f"アドバイス: {out['advice']}",
-        f"例文: {out['example']}",
+        "🔍 心理的根拠:",
+        *[f"・{r}" for r in out.get("psychological_reason", [])],
+        "",
+        f"💞 関係性: {out.get('relationship_dynamics','')}",
+        f"💓 状態: {out.get('status','')}   {hearts(score)}   SCORE: {score}",
+        "",
+        f"🧠 解決策: {out.get('solution','')}",
+        f"💬 スミスの一言: {out.get('advice','')}"
     ]
-    return "\n".join(lines).strip()
+    return "\n".join(lines)
 
-# ---------- /api/message ----------
+# ---------- API ----------
 @app.route("/api/message", methods=["POST"])
-def api_message_default():
-    return _handle_message(normalize_context(request.args.get("context")))
-
-@app.route("/api/message/<context_name>", methods=["POST"])
-def api_message_context(context_name: str):
-    return _handle_message(normalize_context(context_name))
-
-def _handle_message(context_name: str):
-    try:
-        data = request.get_json(force=True) or {}
-        text = (data.get("text") or "").strip()
-        if not text:
-            return jsonify({"reply": "入力が空です"}), 400
-
-        # timeline: 古→新 の配列を想定（なければ空扱い）
-        timeline_items = data.get("timeline") or []
-        timeline_bullets = summarize_timeline(timeline_items, max_items=12, max_chars=140)
-
-        out = call_model(text, context_name, timeline_bullets=timeline_bullets)
-        reply_text = build_reply_text(out, context_name)
-
-        return jsonify({
-            "reply": reply_text,
-            "score": out["score"],
-            "status": out["status"],
-            "hearts": hearts(out["score"]),
-            "tone": tone_label(out["score"]),
-            "advice": out["advice"],
-            "example": out["example"],
-            "context": context_name,
-            "used_timeline": bool(timeline_bullets),
-        })
-    except Exception as e:
-        return jsonify({"reply": f"（サーバ例外）{e}"}), 200
-
-# ---------- LINEペースト解析 ----------
-def parse_line_thread(text: str) -> List[Dict[str, str]]:
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    thread: List[Dict[str, str]] = []
-    for line in lines:
-        m = re.match(r'^([^\:：]+)[:：](.+)$', line)
-        if m:
-            sender = m.group(1).strip()
-            msg = m.group(2).strip()
-        else:
-            sender = "相手" if not thread else thread[-1]["sender"]
-            msg = line
-        thread.append({"sender": sender, "text": msg})
-    return thread
-
-def analyze_line_context(thread: List[Dict[str, str]], context: str):
-    convo = "\n".join(f'{m["sender"]}: {m["text"]}' for m in thread)
-    return call_model(convo, context)
-
-@app.route("/api/line_paste", methods=["POST"])
-def api_line_paste():
+def api_message():
     try:
         data = request.get_json(force=True)
         text = (data.get("text") or "").strip()
-        context = normalize_context(data.get("context") or "恋愛")
-
+        context = normalize_context(data.get("context"))
         if not text:
             return jsonify({"reply": "入力が空です"}), 400
 
-        thread = parse_line_thread(text)
-        out = analyze_line_context(thread, context)
-
-        reply = build_reply_text(out, context)
-        return jsonify({
-            "reply": reply,
-            "score": out["score"],
-            "status": out["status"],
-            "hearts": hearts(out["score"]),
-            "tone": tone_label(out["score"]),
-            "context": context
-        })
+        out = call_model(text, context)
+        reply = build_reply_text(out)
+        return jsonify({"reply": reply, **out})
     except Exception as e:
-        return jsonify({"reply": f"（サーバー例外）{e}"}), 200
-
-# ---------- Health / Root ----------
-@app.get("/health")
-def health():
-    return make_response(jsonify({"ok": True}), 200)
+        return jsonify({"reply": f"（サーバ例外）{e}"}), 200
 
 @app.get("/")
 def root():
     return make_response(jsonify({
         "ok": True,
-        "default_context": DEFAULT_CONTEXT,
-        "thresholds": {"positive": POS_TH, "neutral": NEU_TH},
-        "status_override": STATUS_OVERRIDE,
-        "endpoints": ["/api/message", "/api/line_paste", "/health"]
+        "model": "スミス心理＋メンタリスト統合版",
+        "modes": ["恋愛心理学", "人間関係心理学", "臨床心理学(CBT)", "NLP・感情分析"],
+        "endpoints": ["/api/message"]
     }), 200)
 
 if __name__ == "__main__":
-    # Render などで PORT が渡される想定
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)
-
